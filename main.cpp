@@ -70,12 +70,6 @@ public:
       }
     }
 
-    void getValues(std::ostream& ostr) {
-        for (int i = 0; i < entries; ++i) {
-            ostr << " " << genes[i];
-        }
-    }
-
     int hash() {
         int h = std::hash<float>{}(genes[0]);
 
@@ -87,19 +81,26 @@ public:
         return h;
     }
 
+    friend std::ostream& operator<<(std::ostream& os, const Individual& indiv) {
+        for (int i = 0; i < indiv.entries; ++i) {
+            os << " " << indiv.genes[i];
+        }
+        return os;
+    }
+
 };
 
 
 class Population {
 public:
-    uint16_t populationSize;
+    uint16_t size;
     std::vector<Individual> individuals;
     static constexpr double uniformRate = 0.5;
     static constexpr double mutationRate = 0.25;
     static constexpr int tournamentSize = 4;
 
-    Population(const Population& other) : populationSize(other.populationSize), individuals(other.individuals) { }
-    Population(uint16_t populationSize) : populationSize(populationSize) {
+    Population(const Population& other) : size(other.size), individuals(other.individuals) { }
+    Population(uint16_t populationSize) : size(populationSize) {
         individuals.reserve(populationSize);
     }
 
@@ -107,7 +108,7 @@ public:
         individuals.clear();
         individuals.emplace_back(Individual(MAX_SCORES, data, 50.0));
 
-        for (int i = 1; i < populationSize; i++) {
+        for (int i = 1; i < size; i++) {
             individuals.push_back(individuals[0]);
             individuals.back().mutate(mutationRate);
         }
@@ -116,7 +117,7 @@ public:
 
     Individual getFittest() {
         Individual fittest = individuals[0];
-        for (uint16_t i = 1; i < populationSize; i++) {
+        for (uint16_t i = 1; i < size; i++) {
             if (fittest.fitness < individuals[i].fitness) {
                 fittest = individuals[i];
             }
@@ -126,11 +127,11 @@ public:
 
 
     Population evolve() {
-        Population newPopulation(populationSize);
+        Population newPopulation(size);
 
         newPopulation.individuals.push_back(getFittest());
 
-        for (uint16_t i = 1; i < populationSize; ++i) {
+        for (uint16_t i = 1; i < size; ++i) {
             Individual indiv1 = tournamentSelection();
             Individual indiv2 = tournamentSelection();
             newPopulation.individuals.emplace_back(crossover(indiv1, indiv2));
@@ -159,7 +160,7 @@ public:
 
         tournament.individuals.clear();
         for (uint8_t i = 0; i < tournamentSize; i++) {
-            tournament.individuals.push_back(individuals[(std::rand() % populationSize)]);
+            tournament.individuals.push_back(individuals[(std::rand() % size)]);
         }
 
         return tournament.getFittest();
@@ -172,7 +173,7 @@ public:
     std::map<int, float> scoreHistory;
 
     void scorePopulation(Population& pop) {
-        for (int i = 0; i < pop.populationSize; ++i) {
+        for (int i = 0; i < pop.size; ++i) {
             int h = pop.individuals[i].hash();
             auto search = scoreHistory.find(h);
             if (search == scoreHistory.end()) {
@@ -185,14 +186,12 @@ public:
 
     float exec(const std::string& cmd) {
         std::array<char, 256> buffer;
-        std::string result;
         std::shared_ptr<FILE> pipe(popen(cmd.c_str(), "r"), pclose);
         if (!pipe) throw std::runtime_error("popen() failed!");
         float res = 0;
         int gameNb = 0;
         while (!feof(pipe.get())) {
             if (fgets(buffer.data(), 256, pipe.get()) != NULL) {
-                result += buffer.data();
                 char* p = strstr(buffer.data(), "%");
                 if (p != nullptr) {
                     ++gameNb;
@@ -211,9 +210,7 @@ public:
     void playGame(Individual& indiv, int nb) {
         std::ostringstream oss;
 
-        oss << BRUTAL_BINARY << " -n " << nb << " -p1 '" << CSB_BINARY;
-
-        indiv.getValues(oss);
+        oss << BRUTAL_BINARY << " -n " << nb << " -p1 '" << CSB_BINARY << indiv;
 
         oss << "' -p2 '" << CSB_BINARY;
         for (int i = 0; i < MAX_SCORES; ++i) {
@@ -221,9 +218,7 @@ public:
         }
         oss << "'";
 
-        std::cerr << nb << " games on params :";
-        indiv.getValues(std::cerr);
-        std::cerr << std::endl;
+        std::cerr << nb << " games on params :" << indiv << std::endl;
 
         indiv.fitness = exec(oss.str());
         scoreHistory[indiv.hash()] = indiv.fitness;
@@ -231,7 +226,7 @@ public:
 };
 
 bool doIt(Simulator& sim, Population& pop) {
-    bool rescore = false;
+    bool reset = false;
     sim.scorePopulation(pop);
     // sort population by fitness & test all >= SCORE upgrade% to replace release
     std::sort(pop.individuals.begin(), pop.individuals.end(), [](const Individual& a, const Individual& b){
@@ -245,16 +240,15 @@ bool doIt(Simulator& sim, Population& pop) {
         sim.playGame(pop.individuals[i], GAMES_VAL);
         if (pop.individuals[i].fitness >= MIN_SCORE_FOR_UPGRADE) { // APPROVED
             Individual test = pop.individuals[i];
-            test.getValues(std::cout);
-            std::cout << "\nrelease update with score " << test.fitness << std::endl;
+            std::cout << "Release update with score " << test.fitness << "\nParams:" << test << std::endl;
             memcpy(SCORE_BASES, test.genes, sizeof(test.genes));
             // reset all population
-            rescore = true;
+            reset = true;
             break;
         }
 
     }
-    return rescore;
+    return reset;
 }
 
 int main(int argc, char** argv) {
@@ -274,16 +268,16 @@ int main(int argc, char** argv) {
     Population pop(populationSize);
 
     while (true) {
-        bool rescore = false;
+        bool reset = false;
         pop.init(SCORE_BASES);
         sim.scoreHistory.clear();
         sim.scoreHistory[pop.individuals[0].hash()] = 50.0;
 
-        rescore = doIt(sim, pop);
+        reset = doIt(sim, pop);
 
-        while (!rescore) {
+        while (!reset) {
             pop = pop.evolve();
-            rescore = doIt(sim, pop);
+            reset = doIt(sim, pop);
         }
     }
 
